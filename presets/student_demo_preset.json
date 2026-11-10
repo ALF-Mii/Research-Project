@@ -1,0 +1,13 @@
+{
+  "name": "Student Demo Preset",
+  "description": "Preset for class showcase",
+  "settings": {
+    "squashStretch": 1.0,
+    "volumeFactor": 0.0,
+    "minSquash": 0.85,
+    "maxStretch": 1.25,
+    "stretchOffset": 0.0,
+    "squashBS_mult": 0.0,
+    "stretchBS_mult": 0.0
+  }
+}

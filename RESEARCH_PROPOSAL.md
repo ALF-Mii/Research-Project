@@ -29,8 +29,8 @@ Right now, setting up squash-and-stretch requires manually building complex util
 
 - **By Nov 10 (Week 1 - Completed & Verified):**  
   Core rigging logic in Python works. The underlying node network for volume-preserving squash & stretch can be generated automatically on selected joints/controls of any character model via script. Verified cycle-free via matrix decomposition and tested with live 1-click test rigs (Bouncing Ball & Cartoon Limb).
-- **By Nov 17 (Week 2):**  
-  Preset and blendshape functionality implemented. The tool can read/write squash-and-stretch configurations and trigger corresponding blendshapes (e.g., impact squash + puffed cheeks, elongated stretch) using JSON data or direct Maya attributes.
+- **By Nov 17 (Week 2 - Completed & Verified Ahead of Schedule):**  
+  Preset and blendshape functionality implemented. The tool can read/write squash-and-stretch configurations and trigger corresponding blendshapes (e.g., impact squash + puffed cheeks, elongated stretch) using JSON data or direct Maya attributes. Includes 4 industry presets (Cartoony, Realistic, Mechanical, Impact) and dynamic live blendshape drivers.
 - **By Nov 23 (Week 3 - Final):**  
   Polished UI and full integration. The interface allows seamless toggling and blending of presets, and the completed character is posed in a dynamic test animation demonstrating the tool's capabilities.
 

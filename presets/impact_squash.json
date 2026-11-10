@@ -1,0 +1,13 @@
+{
+  "name": "Impact Squash",
+  "description": "Extreme flattening on ground contacts or heavy landings with high volume burst.",
+  "settings": {
+    "volumeFactor": 1.8,
+    "minSquash": 0.05,
+    "maxStretch": 2.0,
+    "stretchOffset": 0.0,
+    "squashStretch": 1.0,
+    "squashBS_mult": 2.0,
+    "stretchBS_mult": 1.0
+  }
+}

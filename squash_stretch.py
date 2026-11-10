@@ -2,25 +2,31 @@
 
 Automates modular, volume-preserving squash and stretch setups across any
 character rig or joint chain. Fully cycle-free, topology-agnostic, and
-multi-character compatible.
+multi-character compatible. Includes bidirectional blendshape drivers and
+JSON preset management.
 
 Author: Alfredo M.
 Course: Programming for Animators - Research Project 1
 Environment: Maya 2027 / Python 3
 """
 
+import json
 import math
-from typing import List, Optional, Tuple
+import pathlib
+import re
+from typing import Dict, List, Optional, Tuple
 import maya.cmds as cmds
 
 
 # -----------------------------------------------------------------------------
-# Metadata & Tagging Constants
+# Metadata & Directory Constants
 # -----------------------------------------------------------------------------
 META_NODE_TYPE = "network"
 META_TAG_ATTR = "isSquashStretchMeta"
 META_TARGET_ATTR = "ssTargetJoints"
 META_NODES_ATTR = "ssCreatedNodes"
+META_CTRL_ATTR = "ctrlForAttrs"
+PRESETS_DIR = pathlib.Path(__file__).parent / "presets"
 
 
 def _ensure_plugin(plugin_name: str = "matrixNodes") -> None:
@@ -75,6 +81,8 @@ def add_animator_attributes(ctrl: str) -> None:
         ("minSquash", "Min Squash Limit", "float", 0.01, 1.0, 0.2),
         ("maxStretch", "Max Stretch Limit", "float", 1.0, 10.0, 3.0),
         ("stretchOffset", "Stretch Offset", "float", -5.0, 5.0, 0.0),
+        ("squashBS_mult", "Squash BS Multiplier", "float", 0.0, 10.0, 1.0),
+        ("stretchBS_mult", "Stretch BS Multiplier", "float", 0.0, 10.0, 1.0),
     ]
 
     for long_n, nice_n, attr_type, min_v, max_v, def_v in attrs:
@@ -93,6 +101,9 @@ def add_animator_attributes(ctrl: str) -> None:
             cmds.addAttr(ctrl, **kwargs)
 
 
+# -----------------------------------------------------------------------------
+# Core Node Network Construction
+# -----------------------------------------------------------------------------
 def build_squash_stretch(
     start_driver: str,
     end_driver: str,
@@ -238,13 +249,13 @@ def build_squash_stretch(
         cmds.addAttr(meta_node, longName=META_TAG_ATTR, attributeType="bool", defaultValue=True)
         cmds.addAttr(meta_node, longName=META_TARGET_ATTR, dataType="string")
         cmds.addAttr(meta_node, longName=META_NODES_ATTR, dataType="string")
-        cmds.addAttr(meta_node, longName="ctrlForAttrs", dataType="string")
+        cmds.addAttr(meta_node, longName=META_CTRL_ATTR, dataType="string")
         cmds.addAttr(meta_node, longName="restLength", attributeType="float", defaultValue=rest_length)
         cmds.addAttr(meta_node, longName="primaryAxis", dataType="string")
 
         cmds.setAttr(f"{meta_node}.{META_TARGET_ATTR}", ",".join(target_joints), type="string")
         cmds.setAttr(f"{meta_node}.{META_NODES_ATTR}", ",".join(created_nodes), type="string")
-        cmds.setAttr(f"{meta_node}.ctrlForAttrs", ctrl, type="string")
+        cmds.setAttr(f"{meta_node}.{META_CTRL_ATTR}", ctrl, type="string")
         cmds.setAttr(f"{meta_node}.primaryAxis", primary_axis, type="string")
 
         # Connect meta node to controller
@@ -289,7 +300,7 @@ def remove_squash_stretch(ctrl_or_meta: str) -> bool:
     try:
         targets_str = cmds.getAttr(f"{meta_node}.{META_TARGET_ATTR}") or ""
         nodes_str = cmds.getAttr(f"{meta_node}.{META_NODES_ATTR}") or ""
-        ctrl_str = cmds.getAttr(f"{meta_node}.ctrlForAttrs") or ""
+        ctrl_str = cmds.getAttr(f"{meta_node}.{META_CTRL_ATTR}") or ""
 
         target_joints = [t.strip() for t in targets_str.split(",") if t.strip()]
         created_nodes = [n.strip() for n in nodes_str.split(",") if n.strip()]
@@ -310,7 +321,17 @@ def remove_squash_stretch(ctrl_or_meta: str) -> bool:
 
         # Remove attributes from controller if requested
         if ctrl_str and cmds.objExists(ctrl_str):
-            for attr in ("squashStretchDivider", "squashStretch", "volumeFactor", "minSquash", "maxStretch", "stretchOffset", "ssMetaNode"):
+            for attr in (
+                "squashStretchDivider",
+                "squashStretch",
+                "volumeFactor",
+                "minSquash",
+                "maxStretch",
+                "stretchOffset",
+                "squashBS_mult",
+                "stretchBS_mult",
+                "ssMetaNode",
+            ):
                 if cmds.attributeQuery(attr, node=ctrl_str, exists=True):
                     cmds.deleteAttr(f"{ctrl_str}.{attr}")
 
@@ -321,6 +342,29 @@ def remove_squash_stretch(ctrl_or_meta: str) -> bool:
         return True
     finally:
         cmds.undoInfo(closeChunk=True)
+
+
+# -----------------------------------------------------------------------------
+# Blendshape Integration
+# -----------------------------------------------------------------------------
+def find_blendshapes(target_geo_or_node: str) -> List[str]:
+    """Find any blendShape deformers attached to a transform or shape."""
+    if not cmds.objExists(target_geo_or_node):
+        return []
+    history = cmds.listHistory(target_geo_or_node, pruneDagObjects=True) or []
+    return [node for node in history if cmds.nodeType(node) == "blendShape"]
+
+
+def get_blendshape_targets(blendshape_node: str) -> List[str]:
+    """Retrieve list of weight target names on a blendShape node."""
+    if not cmds.objExists(blendshape_node) or cmds.nodeType(blendshape_node) != "blendShape":
+        return []
+    aliases = cmds.aliasAttr(blendshape_node, query=True) or []
+    # aliasAttr returns list of [aliasName, weightName, ...]
+    targets = []
+    for i in range(0, len(aliases), 2):
+        targets.append(aliases[i])
+    return targets
 
 
 def connect_blendshape_driver(
@@ -357,15 +401,18 @@ def connect_blendshape_driver(
         raise ValueError(f"Blendshape node does not exist: {blendshape_node}")
 
     meta_node = meta_or_ctrl
+    ctrl = meta_or_ctrl
     if cmds.attributeQuery("ssMetaNode", node=meta_or_ctrl, exists=True):
         conn = cmds.listConnections(f"{meta_or_ctrl}.ssMetaNode", destination=False, source=True)
         if conn:
             meta_node = conn[0]
+    elif cmds.attributeQuery(META_CTRL_ATTR, node=meta_or_ctrl, exists=True):
+        ctrl = cmds.getAttr(f"{meta_or_ctrl}.{META_CTRL_ATTR}")
 
     nodes_str = cmds.getAttr(f"{meta_node}.{META_NODES_ATTR}") or ""
     created_nodes = [n.strip() for n in nodes_str.split(",") if n.strip()]
 
-    # Find the ratio node
+    # Find the clamp node
     clamp_node = None
     for n in created_nodes:
         if cmds.nodeType(n) == "clamp":
@@ -376,17 +423,28 @@ def connect_blendshape_driver(
         raise RuntimeError("Could not find clamp node from Squash & Stretch setup.")
 
     drivers = {}
+    new_nodes = []
+
+    # Ensure multiplier attributes on controller
+    if ctrl and cmds.objExists(ctrl):
+        if not cmds.attributeQuery("squashBS_mult", node=ctrl, exists=True):
+            cmds.addAttr(ctrl, longName="squashBS_mult", niceName="Squash BS Mult", attributeType="float", defaultValue=multiplier, keyable=True)
+        if not cmds.attributeQuery("stretchBS_mult", node=ctrl, exists=True):
+            cmds.addAttr(ctrl, longName="stretchBS_mult", niceName="Stretch BS Mult", attributeType="float", defaultValue=multiplier, keyable=True)
 
     # Squash driver: activates when S < 1.0 -> weight = clamp(0, 1, (1.0 - S) * multiplier)
     if squash_target_name and cmds.attributeQuery(squash_target_name, node=blendshape_node, exists=True):
         squash_sub = cmds.createNode("plusMinusAverage", name=f"{prefix}_squashDelta_PMA")
-        cmds.setAttr(f"{squash_sub}.operation", 2)  # Subtract: input3D[0] - input3D[1]
+        cmds.setAttr(f"{squash_sub}.operation", 2)  # Subtract
         cmds.setAttr(f"{squash_sub}.input1D[0]", 1.0)
         cmds.connectAttr(f"{clamp_node}.outputR", f"{squash_sub}.input1D[1]", force=True)
 
         squash_mult = _create_node("multDoubleLinear", name=f"{prefix}_squashMult_MDL")
         cmds.connectAttr(f"{squash_sub}.output1D", f"{squash_mult}.input1", force=True)
-        cmds.setAttr(f"{squash_mult}.input2", multiplier)
+        if ctrl and cmds.attributeQuery("squashBS_mult", node=ctrl, exists=True):
+            cmds.connectAttr(f"{ctrl}.squashBS_mult", f"{squash_mult}.input2", force=True)
+        else:
+            cmds.setAttr(f"{squash_mult}.input2", multiplier)
 
         squash_clamp = cmds.createNode("clamp", name=f"{prefix}_squashBS_clamp")
         cmds.setAttr(f"{squash_clamp}.minR", 0.0)
@@ -395,6 +453,7 @@ def connect_blendshape_driver(
 
         cmds.connectAttr(f"{squash_clamp}.outputR", f"{blendshape_node}.{squash_target_name}", force=True)
         drivers["squash"] = [squash_sub, squash_mult, squash_clamp]
+        new_nodes.extend([squash_sub, squash_mult, squash_clamp])
 
     # Stretch driver: activates when S > 1.0 -> weight = clamp(0, 1, (S - 1.0) * multiplier)
     if stretch_target_name and cmds.attributeQuery(stretch_target_name, node=blendshape_node, exists=True):
@@ -405,7 +464,10 @@ def connect_blendshape_driver(
 
         stretch_mult = _create_node("multDoubleLinear", name=f"{prefix}_stretchMult_MDL")
         cmds.connectAttr(f"{stretch_sub}.output1D", f"{stretch_mult}.input1", force=True)
-        cmds.setAttr(f"{stretch_mult}.input2", multiplier)
+        if ctrl and cmds.attributeQuery("stretchBS_mult", node=ctrl, exists=True):
+            cmds.connectAttr(f"{ctrl}.stretchBS_mult", f"{stretch_mult}.input2", force=True)
+        else:
+            cmds.setAttr(f"{stretch_mult}.input2", multiplier)
 
         stretch_clamp = cmds.createNode("clamp", name=f"{prefix}_stretchBS_clamp")
         cmds.setAttr(f"{stretch_clamp}.minR", 0.0)
@@ -414,8 +476,120 @@ def connect_blendshape_driver(
 
         cmds.connectAttr(f"{stretch_clamp}.outputR", f"{blendshape_node}.{stretch_target_name}", force=True)
         drivers["stretch"] = [stretch_sub, stretch_mult, stretch_clamp]
+        new_nodes.extend([stretch_sub, stretch_mult, stretch_clamp])
+
+    # Register new nodes in meta node
+    if new_nodes and cmds.objExists(meta_node):
+        updated_nodes = created_nodes + new_nodes
+        cmds.setAttr(f"{meta_node}.{META_NODES_ATTR}", ",".join(updated_nodes), type="string")
 
     return drivers
+
+
+# -----------------------------------------------------------------------------
+# JSON Preset Management
+# -----------------------------------------------------------------------------
+def get_presets_dir() -> pathlib.Path:
+    """Return the presets folder path, ensuring it exists."""
+    PRESETS_DIR.mkdir(parents=True, exist_ok=True)
+    return PRESETS_DIR
+
+
+def list_presets() -> Dict[str, pathlib.Path]:
+    """Scan presets directory and return {displayName: filePath}."""
+    presets = {}
+    pdir = get_presets_dir()
+    for f in pdir.glob("*.json"):
+        try:
+            with open(f, "r", encoding="utf-8") as fp:
+                data = json.load(fp)
+                name = data.get("name", f.stem.replace("_", " ").title())
+                presets[name] = f
+        except Exception:
+            presets[f.stem.replace("_", " ").title()] = f
+    return presets
+
+
+def load_preset(preset_name_or_file: str, ctrl: str) -> bool:
+    """Load settings from a JSON preset file and apply them to a controller."""
+    if not cmds.objExists(ctrl):
+        cmds.warning(f"Controller {ctrl} does not exist.")
+        return False
+
+    preset_map = list_presets()
+    target_path = None
+
+    if preset_name_or_file in preset_map:
+        target_path = preset_map[preset_name_or_file]
+    else:
+        p = pathlib.Path(preset_name_or_file)
+        if p.is_file():
+            target_path = p
+        else:
+            p_named = get_presets_dir() / f"{preset_name_or_file}.json"
+            if p_named.is_file():
+                target_path = p_named
+
+    if not target_path or not target_path.exists():
+        cmds.warning(f"Preset file not found: {preset_name_or_file}")
+        return False
+
+    with open(target_path, "r", encoding="utf-8") as fp:
+        data = json.load(fp)
+
+    settings = data.get("settings", {})
+    cmds.undoInfo(openChunk=True, chunkName=f"Apply_Preset_{target_path.stem}")
+    try:
+        for attr, val in settings.items():
+            if cmds.attributeQuery(attr, node=ctrl, exists=True):
+                # Clamp within min/max if defined on attribute
+                min_v = cmds.attributeQuery(attr, node=ctrl, min=True)
+                max_v = cmds.attributeQuery(attr, node=ctrl, max=True)
+                clamped_val = val
+                if min_v:
+                    clamped_val = max(min_v[0], clamped_val)
+                if max_v:
+                    clamped_val = min(max_v[0], clamped_val)
+                cmds.setAttr(f"{ctrl}.{attr}", clamped_val)
+        return True
+    finally:
+        cmds.undoInfo(closeChunk=True)
+
+
+def save_preset(name: str, ctrl: str, description: str = "") -> str:
+    """Save current controller settings to a new JSON preset file."""
+    if not cmds.objExists(ctrl):
+        raise ValueError(f"Controller {ctrl} does not exist.")
+
+    slug = re.sub(r"[^\w\-]", "_", name.lower().strip())
+    pdir = get_presets_dir()
+    filepath = pdir / f"{slug}.json"
+
+    tracked_attrs = [
+        "squashStretch",
+        "volumeFactor",
+        "minSquash",
+        "maxStretch",
+        "stretchOffset",
+        "squashBS_mult",
+        "stretchBS_mult",
+    ]
+
+    settings = {}
+    for attr in tracked_attrs:
+        if cmds.attributeQuery(attr, node=ctrl, exists=True):
+            settings[attr] = round(cmds.getAttr(f"{ctrl}.{attr}"), 4)
+
+    payload = {
+        "name": name,
+        "description": description or f"Custom squash & stretch preset saved from {ctrl}.",
+        "settings": settings,
+    }
+
+    with open(filepath, "w", encoding="utf-8") as fp:
+        json.dump(payload, fp, indent=2)
+
+    return str(filepath)
 
 
 # -----------------------------------------------------------------------------
@@ -427,37 +601,30 @@ def create_test_rig(rig_type: str = "bouncing_ball") -> dict:
     Types supported:
         - 'bouncing_ball': Stylized cartoon bouncing ball with root + stretch handle.
         - 'cartoon_limb': 3-joint cartoon leg/arm with IK handle and stretch.
+        - 'ball_with_blendshapes': Bouncing ball with live squash & stretch blendshapes.
     """
     cmds.file(new=True, force=True)
 
     if rig_type == "bouncing_ball":
-        # 1. Base sphere
         sphere = cmds.polySphere(radius=2.0, subdivisionsX=24, subdivisionsY=24, name="test_ball_geo")[0]
         cmds.move(0, 2.0, 0, sphere)
 
-        # 2. Skeleton
         cmds.select(clear=True)
         root_jnt = cmds.joint(name="ball_root_jnt", position=(0, 0, 0))
         center_jnt = cmds.joint(name="ball_center_jnt", position=(0, 2.0, 0))
         top_jnt = cmds.joint(name="ball_top_jnt", position=(0, 4.0, 0))
 
-        # Skin sphere to center_jnt
         skin = cmds.skinCluster(center_jnt, sphere, name="ball_skinCluster", toSelectedBones=True)[0]
 
-        # 3. Controls
         root_ctrl = cmds.circle(normal=(0, 1, 0), radius=3.0, name="ball_root_ctrl")[0]
         cmds.move(0, 0, 0, root_ctrl)
 
         top_ctrl = cmds.circle(normal=(0, 1, 0), radius=1.5, name="ball_stretch_ctrl")[0]
         cmds.move(0, 4.0, 0, top_ctrl)
 
-        # Parent constraint root_jnt to root_ctrl
         cmds.parentConstraint(root_ctrl, root_jnt, maintainOffset=True)
-
-        # Point constraint top_jnt to top_ctrl
         cmds.pointConstraint(top_ctrl, top_jnt, maintainOffset=True)
 
-        # 4. Apply Squash & Stretch
         ss_result = build_squash_stretch(
             start_driver=root_ctrl,
             end_driver=top_ctrl,
@@ -478,33 +645,104 @@ def create_test_rig(rig_type: str = "bouncing_ball") -> dict:
             "setup": ss_result,
         }
 
+    elif rig_type == "ball_with_blendshapes":
+        # 1. Base sphere
+        base_sphere = cmds.polySphere(radius=2.0, subdivisionsX=24, subdivisionsY=24, name="bs_ball_geo")[0]
+        cmds.move(0, 2.0, 0, base_sphere)
+
+        # 2. Duplicate to create Squash Target (flattened and wide)
+        squash_target = cmds.duplicate(base_sphere, name="ball_squash_target")[0]
+        cmds.setAttr(f"{squash_target}.scaleX", 1.5)
+        cmds.setAttr(f"{squash_target}.scaleY", 0.4)
+        cmds.setAttr(f"{squash_target}.scaleZ", 1.5)
+        cmds.makeIdentity(squash_target, apply=True, scale=True)
+        cmds.move(-5.0, 2.0, 0, squash_target)
+
+        # 3. Duplicate to create Stretch Target (tall and tapered)
+        stretch_target = cmds.duplicate(base_sphere, name="ball_stretch_target")[0]
+        cmds.setAttr(f"{stretch_target}.scaleX", 0.6)
+        cmds.setAttr(f"{stretch_target}.scaleY", 2.2)
+        cmds.setAttr(f"{stretch_target}.scaleZ", 0.6)
+        cmds.makeIdentity(stretch_target, apply=True, scale=True)
+        cmds.move(5.0, 2.0, 0, stretch_target)
+
+        # 4. Create BlendShape on base mesh
+        bs_node = cmds.blendShape(squash_target, stretch_target, base_sphere, name="ball_blendShape")[0]
+
+        # 5. Hide target meshes so scene stays clean
+        cmds.setAttr(f"{squash_target}.visibility", 0)
+        cmds.setAttr(f"{stretch_target}.visibility", 0)
+
+        # 6. Build Skeleton & Controls
+        cmds.select(clear=True)
+        root_jnt = cmds.joint(name="bs_ball_root_jnt", position=(0, 0, 0))
+        center_jnt = cmds.joint(name="bs_ball_center_jnt", position=(0, 2.0, 0))
+        top_jnt = cmds.joint(name="bs_ball_top_jnt", position=(0, 4.0, 0))
+
+        cmds.skinCluster(center_jnt, base_sphere, name="bs_ball_skinCluster", toSelectedBones=True)
+
+        root_ctrl = cmds.circle(normal=(0, 1, 0), radius=3.0, name="bs_ball_root_ctrl")[0]
+        cmds.move(0, 0, 0, root_ctrl)
+
+        top_ctrl = cmds.circle(normal=(0, 1, 0), radius=1.5, name="bs_ball_stretch_ctrl")[0]
+        cmds.move(0, 4.0, 0, top_ctrl)
+
+        cmds.parentConstraint(root_ctrl, root_jnt, maintainOffset=True)
+        cmds.pointConstraint(top_ctrl, top_jnt, maintainOffset=True)
+
+        # 7. Build Core Squash & Stretch
+        ss_result = build_squash_stretch(
+            start_driver=root_ctrl,
+            end_driver=top_ctrl,
+            target_joints=[center_jnt],
+            ctrl_for_attrs=top_ctrl,
+            primary_axis="Y",
+            prefix="bs_ball_ss",
+            rest_length=4.0,
+        )
+
+        # 8. Automatically Wire BlendShape Drivers
+        bs_drivers = connect_blendshape_driver(
+            meta_or_ctrl=top_ctrl,
+            blendshape_node=bs_node,
+            squash_target_name="ball_squash_target",
+            stretch_target_name="ball_stretch_target",
+            multiplier=1.2,
+            prefix="bs_ball_driver",
+        )
+
+        cmds.select(top_ctrl)
+        return {
+            "type": "ball_with_blendshapes",
+            "geo": base_sphere,
+            "root_ctrl": root_ctrl,
+            "top_ctrl": top_ctrl,
+            "blendshape_node": bs_node,
+            "setup": ss_result,
+            "bs_drivers": bs_drivers,
+        }
+
     elif rig_type == "cartoon_limb":
-        # 3-joint leg / arm
         cmds.select(clear=True)
         hip_jnt = cmds.joint(name="limb_hip_jnt", position=(0, 6.0, 0))
         knee_jnt = cmds.joint(name="limb_knee_jnt", position=(0, 3.0, 0.3))
         ankle_jnt = cmds.joint(name="limb_ankle_jnt", position=(0, 0.0, 0))
         cmds.joint(hip_jnt, edit=True, orientJoint="xyz", secondaryAxisOrient="yup", children=True)
 
-        # Cylinder mesh
         cyl = cmds.polyCylinder(radius=0.8, height=6.0, subdivisionsY=12, name="limb_geo")[0]
         cmds.move(0, 3.0, 0, cyl)
         cmds.skinCluster([hip_jnt, knee_jnt, ankle_jnt], cyl, name="limb_skinCluster")
 
-        # IK RP solver
         ik_handle = cmds.ikHandle(startJoint=hip_jnt, endEffector=ankle_jnt, solver="ikRPsolver", name="limb_ikHandle")[0]
 
-        # Ankle controller
         foot_ctrl = cmds.circle(normal=(0, 1, 0), radius=1.8, name="limb_foot_ctrl")[0]
         cmds.move(0, 0, 0, foot_ctrl)
         cmds.parent(ik_handle, foot_ctrl)
 
-        # Hip controller
         hip_ctrl = cmds.circle(normal=(0, 1, 0), radius=2.0, name="limb_hip_ctrl")[0]
         cmds.move(0, 6.0, 0, hip_ctrl)
         cmds.parentConstraint(hip_ctrl, hip_jnt, maintainOffset=True)
 
-        # Apply Squash & Stretch across hip and knee joints
         ss_result = build_squash_stretch(
             start_driver=hip_ctrl,
             end_driver=foot_ctrl,
@@ -529,7 +767,7 @@ def create_test_rig(rig_type: str = "bouncing_ball") -> dict:
 
 
 # -----------------------------------------------------------------------------
-# Quick Maya UI
+# Interactive Maya Tool UI
 # -----------------------------------------------------------------------------
 def show_ui() -> None:
     """Display the Squash & Stretch Rigging Tool UI inside Maya."""
@@ -537,48 +775,51 @@ def show_ui() -> None:
     if cmds.window(win_id, exists=True):
         cmds.deleteUI(win_id)
 
-    win = cmds.window(win_id, title="Maya Squash & Stretch Tool", widthHeight=(360, 420), resizeToFitChildren=True)
-    cmds.columnLayout(adjustableColumn=True, rowSpacing=6, columnOffset=("both", 10))
+    win = cmds.window(win_id, title="Maya Squash & Stretch Tool (M2)", widthHeight=(400, 560), resizeToFitChildren=True)
+    main_layout = cmds.columnLayout(adjustableColumn=True, rowSpacing=6, columnOffset=("both", 10))
 
-    cmds.text(label="SQUASH & STRETCH RIGGER", font="boldLabelFont", height=30)
-    cmds.separator(height=10, style="in")
+    cmds.text(label="SQUASH & STRETCH RIGGER v2.0", font="boldLabelFont", height=30)
+    cmds.separator(height=8, style="in")
 
-    cmds.text(label="Step 1: Driver Selection", align="left", font="boldLabelFont")
-    cmds.rowLayout(numberOfColumns=3, columnWidth3=(90, 160, 70), adjustableColumn=2)
+    tab_layout = cmds.tabLayout(innerMarginWidth=5, innerMarginHeight=5)
+
+    # ---------------- TAB 1: RIGGING ----------------
+    tab1 = cmds.columnLayout(adjustableColumn=True, rowSpacing=6)
+    cmds.text(label="Step 1: Drivers & Controller", align="left", font="boldLabelFont")
+    cmds.rowLayout(numberOfColumns=3, columnWidth3=(90, 190, 70), adjustableColumn=2)
     cmds.text(label="Start Driver:")
     start_field = cmds.textField("ss_start_field")
     cmds.button(label="< Set", command=lambda *_: _load_selected_into_field(start_field))
     cmds.setParent("..")
 
-    cmds.rowLayout(numberOfColumns=3, columnWidth3=(90, 160, 70), adjustableColumn=2)
+    cmds.rowLayout(numberOfColumns=3, columnWidth3=(90, 190, 70), adjustableColumn=2)
     cmds.text(label="End Driver:")
     end_field = cmds.textField("ss_end_field")
     cmds.button(label="< Set", command=lambda *_: _load_selected_into_field(end_field))
     cmds.setParent("..")
 
-    cmds.rowLayout(numberOfColumns=3, columnWidth3=(90, 160, 70), adjustableColumn=2)
+    cmds.rowLayout(numberOfColumns=3, columnWidth3=(90, 190, 70), adjustableColumn=2)
     cmds.text(label="Attr Ctrl:")
     ctrl_field = cmds.textField("ss_ctrl_field")
     cmds.button(label="< Set", command=lambda *_: _load_selected_into_field(ctrl_field))
     cmds.setParent("..")
 
-    cmds.separator(height=10, style="in")
+    cmds.separator(height=8, style="in")
     cmds.text(label="Step 2: Target Joints & Axis", align="left", font="boldLabelFont")
-    cmds.rowLayout(numberOfColumns=3, columnWidth3=(90, 160, 70), adjustableColumn=2)
+    cmds.rowLayout(numberOfColumns=3, columnWidth3=(90, 190, 70), adjustableColumn=2)
     cmds.text(label="Target Joints:")
     target_field = cmds.textField("ss_target_field")
     cmds.button(label="< Set", command=lambda *_: _load_selected_into_field(target_field, multi=True))
     cmds.setParent("..")
 
     axis_menu = cmds.optionMenuGrp(label="Primary Axis:", columnWidth=(1, 90))
-    cmds.menuItem(label="X")
-    cmds.menuItem(label="Y")
-    cmds.menuItem(label="Z")
+    for ax in ("X", "Y", "Z"):
+        cmds.menuItem(label=ax)
     cmds.optionMenuGrp(axis_menu, edit=True, value="Y")
 
     prefix_field = cmds.textFieldGrp(label="Prefix:", text="ss", columnWidth=(1, 90))
 
-    cmds.separator(height=10, style="in")
+    cmds.separator(height=8, style="in")
 
     def _on_build(*_):
         start = cmds.textField(start_field, query=True, text=True).strip()
@@ -612,13 +853,162 @@ def show_ui() -> None:
 
     cmds.button(label="BUILD SQUASH & STRETCH", backgroundColor=(0.2, 0.5, 0.3), height=35, command=_on_build)
     cmds.button(label="REMOVE SELECTED SETUP", backgroundColor=(0.5, 0.2, 0.2), height=28, command=_on_remove)
-
-    cmds.separator(height=12, style="in")
-    cmds.text(label="Testing & Demos", align="left", font="boldLabelFont")
-    cmds.rowLayout(numberOfColumns=2, columnWidth2=(170, 170))
-    cmds.button(label="Create Bouncing Ball Test", command=lambda *_: create_test_rig("bouncing_ball"))
-    cmds.button(label="Create Cartoon Limb Test", command=lambda *_: create_test_rig("cartoon_limb"))
     cmds.setParent("..")
+
+    # ---------------- TAB 2: PRESETS ----------------
+    tab2 = cmds.columnLayout(adjustableColumn=True, rowSpacing=6)
+    cmds.text(label="Volume Presets (JSON)", align="left", font="boldLabelFont")
+    cmds.text(label="Select the controller and choose a preset configuration:", align="left", wordWrap=True)
+
+    preset_menu = cmds.optionMenuGrp("ss_preset_menu", label="Preset:", columnWidth=(1, 70))
+    preset_dict = list_presets()
+    for pname in preset_dict.keys():
+        cmds.menuItem(label=pname)
+
+    def _on_apply_preset(*_):
+        sel = cmds.ls(selection=True)
+        if not sel:
+            cmds.warning("Select a rig controller with S&S attributes to apply the preset.")
+            return
+        chosen = cmds.optionMenuGrp(preset_menu, query=True, value=True)
+        if load_preset(chosen, sel[0]):
+            cmds.inViewMessage(amg=f"Applied preset <hl>{chosen}</hl> to {sel[0]}!", pos="topCenter", fade=True)
+
+    def _on_save_preset(*_):
+        sel = cmds.ls(selection=True)
+        if not sel:
+            cmds.warning("Select a rig controller with S&S attributes to save.")
+            return
+        result = cmds.promptDialog(
+            title="Save Custom Preset",
+            message="Enter Preset Name:",
+            button=["Save", "Cancel"],
+            defaultButton="Save",
+            cancelButton="Cancel",
+            dismissString="Cancel",
+        )
+        if result == "Save":
+            pname = cmds.promptDialog(query=True, text=True).strip()
+            if pname:
+                saved_path = save_preset(pname, sel[0])
+                cmds.inViewMessage(amg=f"Saved preset <hl>{pname}</hl> to disk!", pos="topCenter", fade=True)
+                # Refresh menu
+                items = cmds.optionMenuGrp(preset_menu, query=True, itemListLong=True) or []
+                for it in items:
+                    cmds.deleteUI(it)
+                new_dict = list_presets()
+                for p in new_dict.keys():
+                    cmds.menuItem(label=p, parent=f"{preset_menu}|OptionMenu")
+
+    cmds.rowLayout(numberOfColumns=2, columnWidth2=(180, 180))
+    cmds.button(label="Apply to Selected Ctrl", height=32, backgroundColor=(0.2, 0.4, 0.5), command=_on_apply_preset)
+    cmds.button(label="Save Current as Preset...", height=32, command=_on_save_preset)
+    cmds.setParent("..")
+
+    cmds.separator(height=10, style="in")
+    cmds.text(label="Preset Descriptions:", font="boldLabelFont", align="left")
+    cmds.text(label="• Cartoony Rubber: volume=1.4, limits=[0.1, 4.0]\n• Realistic Flesh: volume=0.85, limits=[0.65, 1.35]\n• Mechanical: volume=0.0, limits=[0.85, 1.25]\n• Impact Squash: volume=1.8, limits=[0.05, 2.0]", align="left")
+    cmds.setParent("..")
+
+    # ---------------- TAB 3: BLENDSHAPES ----------------
+    tab3 = cmds.columnLayout(adjustableColumn=True, rowSpacing=6)
+    cmds.text(label="BlendShape Driver Wiring", align="left", font="boldLabelFont")
+    cmds.text(label="Wire squash & stretch deltas to drive blendshapes automatically:", align="left", wordWrap=True)
+
+    cmds.rowLayout(numberOfColumns=3, columnWidth3=(90, 190, 70), adjustableColumn=2)
+    cmds.text(label="Controller:")
+    bs_ctrl_field = cmds.textField("ss_bs_ctrl_field")
+    cmds.button(label="< Set", command=lambda *_: _load_selected_into_field(bs_ctrl_field))
+    cmds.setParent("..")
+
+    cmds.rowLayout(numberOfColumns=3, columnWidth3=(90, 190, 70), adjustableColumn=2)
+    cmds.text(label="BlendShape:")
+    bs_node_field = cmds.textField("ss_bs_node_field")
+    def _detect_bs():
+        sel = cmds.ls(selection=True)
+        if not sel:
+            cmds.warning("Select a mesh or blendshape node.")
+            return
+        if cmds.nodeType(sel[0]) == "blendShape":
+            cmds.textField(bs_node_field, edit=True, text=sel[0])
+        else:
+            bss = find_blendshapes(sel[0])
+            if bss:
+                cmds.textField(bs_node_field, edit=True, text=bss[0])
+            else:
+                cmds.warning(f"No blendShape found on {sel[0]}")
+    cmds.button(label="< Detect", command=lambda *_: _detect_bs())
+    cmds.setParent("..")
+
+    cmds.rowLayout(numberOfColumns=2, columnWidth2=(130, 220), adjustableColumn=2)
+    cmds.text(label="Squash Target Name:")
+    squash_target_field = cmds.textField("ss_squash_target_field")
+    cmds.setParent("..")
+
+    cmds.rowLayout(numberOfColumns=2, columnWidth2=(130, 220), adjustableColumn=2)
+    cmds.text(label="Stretch Target Name:")
+    stretch_target_field = cmds.textField("ss_stretch_target_field")
+    cmds.setParent("..")
+
+    mult_slider = cmds.floatSliderGrp(label="Sensitivity:", field=True, minValue=0.1, maxValue=5.0, value=1.0, step=0.1, columnWidth=(1, 90))
+
+    def _on_connect_bs(*_):
+        c = cmds.textField(bs_ctrl_field, query=True, text=True).strip()
+        bs = cmds.textField(bs_node_field, query=True, text=True).strip()
+        sq = cmds.textField(squash_target_field, query=True, text=True).strip() or None
+        st = cmds.textField(stretch_target_field, query=True, text=True).strip() or None
+        m = cmds.floatSliderGrp(mult_slider, query=True, value=True)
+
+        if not c or not bs:
+            cmds.warning("Please specify both Controller and BlendShape node!")
+            return
+
+        connect_blendshape_driver(
+            meta_or_ctrl=c,
+            blendshape_node=bs,
+            squash_target_name=sq,
+            stretch_target_name=st,
+            multiplier=m,
+        )
+        cmds.inViewMessage(amg="BlendShape drivers connected successfully!", pos="topCenter", fade=True)
+
+    cmds.button(label="CONNECT BLENDSHAPE DRIVERS", backgroundColor=(0.3, 0.4, 0.5), height=35, command=_on_connect_bs)
+    cmds.setParent("..")
+
+    # ---------------- TAB 4: DEMOS & RIG GENERATORS ----------------
+    tab4 = cmds.columnLayout(adjustableColumn=True, rowSpacing=8)
+    cmds.text(label="Procedural Verification Rigs", align="left", font="boldLabelFont")
+    cmds.text(label="Generates clean self-contained test scenes for demonstration:", align="left")
+
+    cmds.button(
+        label="1. Bouncing Ball (Volume S&S)",
+        height=32,
+        command=lambda *_: create_test_rig("bouncing_ball"),
+    )
+    cmds.button(
+        label="2. Ball with Live BlendShapes (Squash/Stretch Shapes)",
+        height=32,
+        backgroundColor=(0.2, 0.45, 0.35),
+        command=lambda *_: create_test_rig("ball_with_blendshapes"),
+    )
+    cmds.button(
+        label="3. Cartoon IK Leg/Arm (Multi-Joint Bone Chain)",
+        height=32,
+        command=lambda *_: create_test_rig("cartoon_limb"),
+    )
+    cmds.setParent("..")
+
+    # Finalize Tabs
+    cmds.tabLayout(
+        tab_layout,
+        edit=True,
+        tabLabel=(
+            (tab1, "1. Rigging"),
+            (tab2, "2. Presets"),
+            (tab3, "3. BlendShapes"),
+            (tab4, "4. Demos"),
+        ),
+    )
 
     cmds.showWindow(win)
 

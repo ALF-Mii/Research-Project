@@ -1,0 +1,13 @@
+{
+  "name": "Mechanical Hard-Surface",
+  "description": "Minimal deformation for robots, vehicles, and mechanical pistons with strict extension clamps.",
+  "settings": {
+    "volumeFactor": 0.0,
+    "minSquash": 0.85,
+    "maxStretch": 1.25,
+    "stretchOffset": 0.0,
+    "squashStretch": 1.0,
+    "squashBS_mult": 0.0,
+    "stretchBS_mult": 0.0
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "name": "Realistic Flesh",
+  "description": "Subtle volume preservation for realistic human or creature anatomy to avoid rubbery look.",
+  "settings": {
+    "volumeFactor": 0.85,
+    "minSquash": 0.65,
+    "maxStretch": 1.35,
+    "stretchOffset": 0.0,
+    "squashStretch": 1.0,
+    "squashBS_mult": 0.8,
+    "stretchBS_mult": 0.8
+  }
+}

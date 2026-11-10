@@ -1,0 +1,13 @@
+{
+  "name": "Cartoony Rubber",
+  "description": "Exaggerated squash and stretch with high volume expansion for bouncy stylized characters and props.",
+  "settings": {
+    "volumeFactor": 1.4,
+    "minSquash": 0.1,
+    "maxStretch": 4.0,
+    "stretchOffset": 0.0,
+    "squashStretch": 1.0,
+    "squashBS_mult": 1.5,
+    "stretchBS_mult": 1.2
+  }
+}
