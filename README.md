@@ -2,8 +2,10 @@
 
 [![Maya 2027](https://img.shields.io/badge/Maya-2027-blue.svg)](https://www.autodesk.com/products/maya/)
 [![Python 3.13](https://img.shields.io/badge/Python-3.13-brightgreen.svg)](https://www.python.org/)
+[![PySide6](https://img.shields.io/badge/UI-PySide6-orange.svg)](https://wiki.qt.io/Qt_for_Python)
 [![Milestone 1](https://img.shields.io/badge/Milestone%201-Verified%20(Nov%2010)-success.svg)]()
 [![Milestone 2](https://img.shields.io/badge/Milestone%202-Verified%20(Nov%2017)-success.svg)]()
+[![Milestone 3](https://img.shields.io/badge/Milestone%203-Complete%20(Nov%2023)-success.svg)]()
 
 A modular, volume-preserving Squash and Stretch rigging tool for Autodesk Maya. Built for stylized character animation, cartoon props, and dynamic rigging pipelines.
 
@@ -14,12 +16,14 @@ A modular, volume-preserving Squash and Stretch rigging tool for Autodesk Maya. 
 2. [Instructor Feedback & Multi-Character Design](#instructor-feedback--multi-character-design)
 3. [Mathematical Model](#mathematical-model)
 4. [Live Test Verification](#live-test-verification)
-5. [Blendshape Integration (Milestone 2)](#blendshape-integration-milestone-2)
-6. [JSON Preset System (Milestone 2)](#json-preset-system-milestone-2)
-7. [Installation & Quick Start](#installation--quick-start)
-8. [Tool UI & Features](#tool-ui--features)
-9. [API Reference](#api-reference)
-10. [Milestones & Progress](#milestones--progress)
+5. [Blendshape Integration](#blendshape-integration)
+6. [JSON Preset System](#json-preset-system)
+7. [Multi-Character Showcase Animation](#multi-character-showcase-animation)
+8. [Installation & Quick Start](#installation--quick-start)
+9. [Modern PySide6 UI](#modern-pyside6-ui)
+10. [API Reference](#api-reference)
+11. [Presentation & In-Class Demo Guide](#presentation--in-class-demo-guide)
+12. [Milestones & Progress](#milestones--progress)
 
 ---
 
@@ -33,6 +37,8 @@ This tool provides:
 - **Topology & Rig Agnostic:** Works on any 2-point driver setup or multi-joint chain (bipeds, quadrupeds, tails, spines, balls, props).
 - **Bidirectional Blendshape Drivers:** Automatically fires squash blendshapes (e.g. cheek puffs, belly squashes) on compression, and stretch blendshapes on elongation.
 - **JSON Preset Engine:** One-click saving and loading of character deformation profiles (Cartoony, Realistic, Mechanical, Impact).
+- **Multi-Character Animated Showcase:** 3-character side-by-side animated demonstration scene with automatic 120-frame keyframing and playblast exporter.
+- **Modern PySide6 UI:** Dark-themed Qt window with live parameter readouts, preset browsing, and one-click rigging actions.
 - **Safe Reversibility:** Tags setups with a meta network node (`SS_Meta`), enabling 100% clean removal without leaving junk nodes or breaking joint hierarchies.
 
 ---
@@ -45,7 +51,10 @@ This tool provides:
 To satisfy this requirement, the tool is built with **zero hardcoded joint names**:
 - Operates on user selection or explicit transform arguments.
 - Supports selectable primary bone axes (**X**, **Y**, or **Z**) to accommodate different auto-riggers (e.g., HumanIK, AdvancedSkeleton, mGear, custom student rigs).
-- Includes procedural test generators (`bouncing_ball`, `ball_with_blendshapes`, `cartoon_limb`) to immediately verify deformation behavior on different topologies before importing classmate characters.
+- Includes the **3-Character Animated Showcase** (`showcase.py`) demonstrating simultaneous volume preservation across:
+  1. **Character A (Cartoon Bouncing Ball):** Full volume preservation + squash/stretch blendshapes.
+  2. **Character B (3-Joint IK Cartoon Limb):** Multi-joint bone chain stretching past rest with lateral compression.
+  3. **Character C (4-Joint Cartoon Spine):** Flexible spine compression and arching elongation.
 
 ---
 
@@ -93,7 +102,7 @@ Verified live in Autodesk Maya 2027:
 
 ---
 
-## Blendshape Integration (Milestone 2)
+## Blendshape Integration
 
 The tool connects deformation deltas directly into Maya `blendShape` target weights without script expressions:
 - **Squash Delta Driver ($S < 1.0$):**
@@ -105,7 +114,7 @@ Animators can keyframe or dial `squashBS_mult` and `stretchBS_mult` directly in 
 
 ---
 
-## JSON Preset System (Milestone 2)
+## JSON Preset System
 
 Presets are stored as standard JSON files inside the [`presets/`](presets/) directory.
 
@@ -119,13 +128,33 @@ Presets are stored as standard JSON files inside the [`presets/`](presets/) dire
 4. **Impact Squash (`impact_squash.json`):**
    - Extreme ground contact flattening (`minSquash = 0.05`, `volumeFactor = 1.8`, `squashBS_mult = 2.0`).
 
-Animators can also click **"Save Current as Preset..."** in the UI to save their own custom profiles.
+---
+
+## Multi-Character Showcase Animation
+
+Run one command in Maya to construct an animated side-by-side comparison across 3 distinct characters:
+
+```python
+import showcase
+showcase.build_multi_character_showcase()
+```
+
+- **Frame 1–30:** Anticipation & crouching squash.
+- **Frame 31–60:** Explosive jump & high extension kicks (volume compression).
+- **Frame 61–90:** Ground impact squash (blendshape triggers) & elastic torso recoil.
+- **Frame 91–120:** Settling loop back to rest.
+
+To export playblast animation frames:
+```python
+showcase.export_playblast("my_showcase")
+```
+Exported frames are saved in [`movies/`](movies/).
 
 ---
 
 ## Installation & Quick Start
 
-### 1. In Maya Script Editor
+### 1. Launch the Modern PySide6 UI in Maya
 Open Maya's **Script Editor** (`Windows > General Editors > Script Editor`), select the **Python** tab, and run:
 
 ```python
@@ -134,30 +163,33 @@ repo_path = r"C:\Users\alfre\Documents\Research-Project"
 if repo_path not in sys.path:
     sys.path.append(repo_path)
 
-import squash_stretch as ss
-ss.show_ui()
+import squash_stretch_pyside as ss_ui
+ss_ui.show_pyside_ui()
 ```
 
 ### 2. Fast 1-Click Verification Demos
 ```python
-import squash_stretch as ss
-
-# 1. Bouncing ball with live squash/stretch blendshapes:
-ss.create_test_rig("ball_with_blendshapes")
-
-# 2. 3-Joint IK Cartoon Limb:
-# ss.create_test_rig("cartoon_limb")
+import showcase
+showcase.build_multi_character_showcase()
 ```
 
 ---
 
-## Tool UI & Features
+## Modern PySide6 UI
 
-The tool features a 4-tab interface (`ss.show_ui()`):
-- **Tab 1: Rigging:** Start & End driver selection, target joints, primary axis selection, and one-click build/remove.
-- **Tab 2: Presets:** Preset dropdown selector, "Apply to Selected Ctrl", and "Save Current as Preset...".
-- **Tab 3: BlendShapes:** Auto-detect blendShape nodes, map squash & stretch shape targets, and adjust sensitivity.
-- **Tab 4: Demos:** 1-click procedural test rig generators.
+The tool features a 4-tab interface ([`squash_stretch_pyside.py`](squash_stretch_pyside.py)):
+- **Tab 1: Rigging:** Start & End driver selection, target joints, primary axis selection (X, Y, Z), and one-click build/remove.
+- **Tab 2: Presets:** Preset dropdown selector with description preview, "Apply to Selected Ctrl", and "Save Current as Preset...".
+- **Tab 3: BlendShapes:** Auto-detect blendShape nodes, map squash & stretch target channels, and adjust sensitivity.
+- **Tab 4: Showcase:** 1-click 3-character animated showcase builder and playblast exporter.
+
+*(A native Maya `cmds` fallback interface is also available via `squash_stretch.show_ui()` for systems without PySide).*
+
+---
+
+## Presentation & In-Class Demo Guide
+
+See [`PRESENTATION_NOTES.md`](PRESENTATION_NOTES.md) for the complete 5-minute presentation script, live demo walkthrough, and anticipated Q&A for the **Tuesday, November 24** presentation.
 
 ---
 
@@ -212,8 +244,9 @@ Cleanly reverts joint scales and deletes all helper nodes.
   - Interactive sensitivity multipliers on controller.
   - JSON preset serializer & loader with 4 built-in profiles.
   - Live test rig with active blendshape targets (`ball_with_blendshapes`).
-- [ ] **Week 3 (Nov 23): Polished PySide UI & Multi-Character Demo**
-  - Polished presentation UI.
-  - Testing on student classmate character rigs.
-  - Final animation presentation clip.
+- [x] **Week 3 (Nov 23): Polished PySide UI & Multi-Character Showcase**
+  - Modern PySide6 dark-themed UI window (`squash_stretch_pyside.py`).
+  - 3-Character animated showcase scene with 120-frame animation (`showcase.py`).
+  - Automatic playblast exporter.
+  - Presentation notes and live demo script (`PRESENTATION_NOTES.md`).
 - [ ] **Class Presentation (Nov 24)**
